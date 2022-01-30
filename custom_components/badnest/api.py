@@ -110,10 +110,10 @@ class NestAPI():
         self._cookie = cookie
         self._czfe_url = None
         self.cameras = []
-        self.thermostats = set()
-        self.temperature_sensors = set()
-        self.protects = set()
-
+        self.thermostats = []
+        self.temperature_sensors = []
+        self.hotwatercontrollers = []
+        self.protects = []
         self.login()
         self._get_devices()
         self.update()
@@ -241,33 +241,44 @@ class NestAPI():
 
     @Decorators.refresh_login
     def _get_devices(self):
-        r = self._session.post(
-            f"{API_URL}/api/0.1/user/{self._user_id}/app_launch",
-            json={
-                "known_bucket_types": ["buckets"],
-                "known_bucket_versions": [],
-            }
-        )
+        try:
+            r = self._session.post(
+                f"{API_URL}/api/0.1/user/{self._user_id}/app_launch",
+                json={
+                    "known_bucket_types": ["buckets"],
+                    "known_bucket_versions": [],
+                }
+            )
 
-        self._check_request(r)
+            self._czfe_url = r.json()["service_urls"]["urls"]["czfe_url"]
 
-        self._czfe_url = r.json()["service_urls"]["urls"]["czfe_url"]
+            buckets = r.json()['updated_buckets'][0]['value']['buckets']
+            for bucket in buckets:
+                if bucket.startswith('topaz.'):
+                    sn = bucket.replace('topaz.', '')
+                    self.protects.append(sn)
+                    self.device_data[sn] = {}
+                elif bucket.startswith('kryptonite.'):
+                    sn = bucket.replace('kryptonite.', '')
+                    self.temperature_sensors.append(sn)
+                    self.device_data[sn] = {}
+                elif bucket.startswith('device.'):
+                    sn = bucket.replace('device.', '')
+                    self.thermostats.append(sn)
+                    self.temperature_sensors.append(sn)
+                    self.hotwatercontrollers.append(sn)
+                    self.device_data[sn] = {}
 
-        buckets = r.json()['updated_buckets'][0]['value']['buckets']
-        for bucket in buckets:
-            if bucket.startswith('topaz.'):
-                sn = bucket.replace('topaz.', '')
-                self.protects.add(sn)
-                self.device_data[sn] = {}
-            elif bucket.startswith('kryptonite.'):
-                sn = bucket.replace('kryptonite.', '')
-                self.temperature_sensors.add(sn)
-                self.device_data[sn] = {}
-            elif bucket.startswith('device.'):
-                sn = bucket.replace('device.', '')
-                self.thermostats.add(sn)
-                self.temperature_sensors.add(sn)
-                self.device_data[sn] = {}
+            self.cameras = self._get_cameras()
+
+        except requests.exceptions.RequestException as e:
+            _LOGGER.error(e)
+            _LOGGER.error('Failed to get devices, trying again')
+            return self.get_devices()
+        except KeyError:
+            _LOGGER.debug('Failed to get devices, trying to log in again')
+            self.login()
+            return self.get_devices()
 
         self.cameras = self._get_cameras()
 
@@ -329,113 +340,149 @@ class NestAPI():
 
     @Decorators.refresh_login
     def update(self):
-        self._get_names()
+        try:
+            self._get_names()
 
-        r = self._session.post(
-            f"{API_URL}/api/0.1/user/{self._user_id}/app_launch",
-            json={
-                "known_bucket_types": KNOWN_BUCKET_TYPES,
-                "known_bucket_versions": [],
-            }
-        )
+            r = self._session.post(
+                f"{API_URL}/api/0.1/user/{self._user_id}/app_launch",
+                json={
+                    "known_bucket_types": KNOWN_BUCKET_TYPES,
+                    "known_bucket_versions": [],
+                }
+            )
 
-        self._check_request(r)
+            self._check_request(r)
 
-        for bucket in r.json()["updated_buckets"]:
-            sensor_data = bucket["value"]
-            sn = bucket["object_key"].split('.')[1]
-            # Thermostats (thermostat and sensors system)
-            if bucket["object_key"].startswith(
-                    f"shared.{sn}"):
-                self.device_data[sn]['current_temperature'] = \
-                    sensor_data["current_temperature"]
-                self.device_data[sn]['target_temperature'] = \
-                    sensor_data["target_temperature"]
-                self.device_data[sn]['hvac_ac_state'] = \
-                    sensor_data["hvac_ac_state"]
-                self.device_data[sn]['hvac_heater_state'] = \
-                    sensor_data["hvac_heater_state"]
-                self.device_data[sn]['target_temperature_high'] = \
-                    sensor_data["target_temperature_high"]
-                self.device_data[sn]['target_temperature_low'] = \
-                    sensor_data["target_temperature_low"]
-                self.device_data[sn]['can_heat'] = \
-                    sensor_data["can_heat"]
-                self.device_data[sn]['can_cool'] = \
-                    sensor_data["can_cool"]
-                self.device_data[sn]['mode'] = \
-                    sensor_data["target_temperature_type"]
-                if self.device_data[sn]['hvac_ac_state']:
-                    self.device_data[sn]['action'] = "cooling"
-                elif self.device_data[sn]['hvac_heater_state']:
-                    self.device_data[sn]['action'] = "heating"
-                else:
-                    self.device_data[sn]['action'] = "off"
-            # Thermostats, pt 2
-            elif bucket["object_key"].startswith(
-                    f"device.{sn}"):
-                self.device_data[sn]['name'] = self._wheres[
-                    sensor_data['where_id']
-                ]
-                # When acts as a sensor
-                if 'backplate_temperature' in sensor_data:
+            for bucket in r.json()["updated_buckets"]:
+                sensor_data = bucket["value"]
+                sn = bucket["object_key"].split('.')[1]
+                # Thermostats (thermostat and sensors system)
+                if bucket["object_key"].startswith(
+                        f"shared.{sn}"):
+                    self.device_data[sn]['current_temperature'] = \
+                        sensor_data["current_temperature"]
+                    self.device_data[sn]['target_temperature'] = \
+                        sensor_data["target_temperature"]
+                    self.device_data[sn]['hvac_ac_state'] = \
+                        sensor_data["hvac_ac_state"]
+                    self.device_data[sn]['hvac_heater_state'] = \
+                        sensor_data["hvac_heater_state"]
+                    self.device_data[sn]['target_temperature_high'] = \
+                        sensor_data["target_temperature_high"]
+                    self.device_data[sn]['target_temperature_low'] = \
+                        sensor_data["target_temperature_low"]
+                    self.device_data[sn]['can_heat'] = \
+                        sensor_data["can_heat"]
+                    self.device_data[sn]['can_cool'] = \
+                        sensor_data["can_cool"]
+                    self.device_data[sn]['mode'] = \
+                        sensor_data["target_temperature_type"]
+                    if self.device_data[sn]['hvac_ac_state']:
+                        self.device_data[sn]['action'] = "cooling"
+                    elif self.device_data[sn]['hvac_heater_state']:
+                        self.device_data[sn]['action'] = "heating"
+                    else:
+                        self.device_data[sn]['action'] = "off"
+                # Thermostats, pt 2
+                elif bucket["object_key"].startswith(
+                        f"device.{sn}"):
+                    self.device_data[sn]['name'] = self._wheres[
+                        sensor_data['where_id']
+                    ]
+                    # When acts as a sensor
+                    if 'backplate_temperature' in sensor_data:
+                        self.device_data[sn]['temperature'] = \
+                            sensor_data['backplate_temperature']
+                    if 'battery_level' in sensor_data:
+                        self.device_data[sn]['battery_level'] = \
+                            sensor_data['battery_level']
+
+                    if sensor_data.get('description', None):
+                        self.device_data[sn]['name'] += \
+                            f' ({sensor_data["description"]})'
+                    self.device_data[sn]['name'] += ' Thermostat'
+                    self.device_data[sn]['has_fan'] = \
+                        sensor_data["has_fan"]
+                    self.device_data[sn]['fan'] = \
+                        sensor_data["fan_timer_timeout"]
+                    self.device_data[sn]['current_humidity'] = \
+                        sensor_data["current_humidity"]
+                    self.device_data[sn]['target_humidity'] = \
+                        sensor_data["target_humidity"]
+                    self.device_data[sn]['target_humidity_enabled'] = \
+                        sensor_data["target_humidity_enabled"]
+                    if sensor_data["eco"]["mode"] == 'manual-eco' or \
+                            sensor_data["eco"]["mode"] == 'auto-eco':
+                        self.device_data[sn]['eco'] = True
+                    else:
+                        self.device_data[sn]['eco'] = False
+
+                    # Hot water
+                    # - Status
+                    self.device_data[sn]['has_hot_water_control'] = \
+                        sensor_data["has_hot_water_control"]
+                    self.device_data[sn]['hot_water_status'] = \
+                        sensor_data["hot_water_active"]
+                    self.device_data[sn]['hot_water_actively_heating'] = \
+                        sensor_data["hot_water_boiling_state"]
+                    self.device_data[sn]['hot_water_away_active'] = \
+                        sensor_data["hot_water_away_active"]
+                    # - Status/Settings
+                    self.device_data[sn]['hot_water_timer_mode'] = \
+                        sensor_data["hot_water_mode"]
+                    self.device_data[sn]['hot_water_away_setting'] = \
+                        sensor_data["hot_water_away_enabled"]
+                    self.device_data[sn]['hot_water_boost_setting'] = \
+                        sensor_data["hot_water_boost_time_to_end"]
+
+                # Protect
+                elif bucket["object_key"].startswith(
+                        f"topaz.{sn}"):
+                    self.device_data[sn]['name'] = self._wheres[
+                        sensor_data['where_id']
+                    ]
+                    if sensor_data.get('description', None):
+                        self.device_data[sn]['name'] += \
+                            f' ({sensor_data["description"]})'
+                    self.device_data[sn]['name'] += ' Protect'
+                    self.device_data[sn]['co_status'] = \
+                        self._map_nest_protect_state(sensor_data['co_status'])
+                    self.device_data[sn]['smoke_status'] = \
+                        self._map_nest_protect_state(sensor_data['smoke_status'])
+                    self.device_data[sn]['battery_health_state'] = \
+                        self._map_nest_protect_state(sensor_data['battery_health_state'])
+                # Temperature sensors
+                elif bucket["object_key"].startswith(
+                        f"kryptonite.{sn}"):
+                    self.device_data[sn]['name'] = self._wheres[
+                        sensor_data['where_id']
+                    ]
+                    if sensor_data.get('description', None):
+                        self.device_data[sn]['name'] += \
+                            f' ({sensor_data["description"]})'
+                    self.device_data[sn]['name'] += ' Temperature'
+                # Temperature sensors
+                elif bucket["object_key"].startswith(
+                        f"kryptonite.{sn}"):
+                    self.device_data[sn]['name'] = self._wheres[
+                        sensor_data['where_id']
+                    ]
+                    if sensor_data.get('description', None):
+                        self.device_data[sn]['name'] += \
+                            f' ({sensor_data["description"]})'
+                    self.device_data[sn]['name'] += ' Temperature'
                     self.device_data[sn]['temperature'] = \
-                        sensor_data['backplate_temperature']
-                if 'battery_level' in sensor_data:
+                        sensor_data['current_temperature']
                     self.device_data[sn]['battery_level'] = \
                         sensor_data['battery_level']
-
-                if sensor_data.get('description', None):
-                    self.device_data[sn]['name'] += \
-                        f' ({sensor_data["description"]})'
-                self.device_data[sn]['name'] += ' Thermostat'
-                self.device_data[sn]['has_fan'] = \
-                    sensor_data["has_fan"]
-                self.device_data[sn]['fan'] = \
-                    sensor_data["fan_timer_timeout"]
-                self.device_data[sn]['current_humidity'] = \
-                    sensor_data["current_humidity"]
-                self.device_data[sn]['target_humidity'] = \
-                    sensor_data["target_humidity"]
-                self.device_data[sn]['target_humidity_enabled'] = \
-                    sensor_data["target_humidity_enabled"]
-                if sensor_data["eco"]["mode"] == 'manual-eco' or \
-                        sensor_data["eco"]["mode"] == 'auto-eco':
-                    self.device_data[sn]['eco'] = True
-                else:
-                    self.device_data[sn]['eco'] = False
-            # Protect
-            elif bucket["object_key"].startswith(
-                    f"topaz.{sn}"):
-                self.device_data[sn]['name'] = self._wheres[
-                    sensor_data['where_id']
-                ]
-                if sensor_data.get('description', None):
-                    self.device_data[sn]['name'] += \
-                        f' ({sensor_data["description"]})'
-                self.device_data[sn]['name'] += ' Protect'
-                self.device_data[sn]['co_status'] = \
-                    self._map_nest_protect_state(sensor_data['co_status'])
-                self.device_data[sn]['smoke_status'] = \
-                    self._map_nest_protect_state(
-                            sensor_data['smoke_status'])
-                self.device_data[sn]['battery_health_state'] = \
-                    self._map_nest_protect_state(
-                            sensor_data['battery_health_state'])
-            # Temperature sensors
-            elif bucket["object_key"].startswith(
-                    f"kryptonite.{sn}"):
-                self.device_data[sn]['name'] = self._wheres[
-                    sensor_data['where_id']
-                ]
-                if sensor_data.get('description', None):
-                    self.device_data[sn]['name'] += \
-                        f' ({sensor_data["description"]})'
-                self.device_data[sn]['name'] += ' Temperature'
-                self.device_data[sn]['temperature'] = \
-                    sensor_data['current_temperature']
-                self.device_data[sn]['battery_level'] = \
-                    sensor_data['battery_level']
+        except requests.exceptions.RequestException as e:
+            _LOGGER.error(e)
+            _LOGGER.error('Failed to update, trying again')
+            self.update()
+        except KeyError:
+            _LOGGER.debug('Failed to update, trying to log in again')
+            self.login()
+            self.update()
 
     @Decorators.refresh_login
     def thermostat_set_active_sensor(self, t_device_id, s_device_id):
@@ -576,6 +623,90 @@ class NestAPI():
 
         self._check_request(r)
 
+    @Decorators.refresh_login
+    def hotwater_set_boost(self, device_id, time):
+        if device_id not in self.hotwatercontrollers:
+            return
+
+        try:
+            self._session.post(
+                f"{self._czfe_url}/v5/put",
+                json={
+                    "objects": [
+                        {
+                            "object_key": f'device.{device_id}',
+                            "op": "MERGE",
+                            "value": {"hot_water_boost_time_to_end": time},
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Basic {self._access_token}"},
+            )
+        except requests.exceptions.RequestException as e:
+            _LOGGER.error(e)
+            _LOGGER.error('Failed to boost hot water, trying again')
+            self.hotwater_set_boost(device_id, time)
+        except KeyError:
+            _LOGGER.debug('Failed to boost hot water, trying to log in again')
+            self.login()
+            self.hotwater_set_boost(device_id, time)
+
+    def hotwater_set_away_mode(self, device_id, away_mode):
+        if device_id not in self.hotwatercontrollers:
+            return
+
+        try:
+            self._session.post(
+                f"{self._czfe_url}/v5/put",
+                json={
+                    "objects": [
+                        {
+                            "object_key": f'device.{device_id}',
+                            "op": "MERGE",
+                            "value": {"hot_water_away_enabled": away_mode},
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Basic {self._access_token}"},
+            )
+        except requests.exceptions.RequestException as e:
+            _LOGGER.error(e)
+            _LOGGER.error('Failed to set hot water away mode, trying again')
+            self.hotwater_set_away_mode(device_id, away_mode)
+        except KeyError:
+            _LOGGER.debug('Failed to set hot water away mode, '
+                          'trying to log in again')
+            self.login()
+            self.hotwater_set_away_mode(device_id, away_mode)
+
+    def hotwater_set_mode(self, device_id, mode):
+        if device_id not in self.hotwatercontrollers:
+            return
+
+        try:
+            self._session.post(
+                f"{self._czfe_url}/v5/put",
+                json={
+                    "objects": [
+                        {
+                            "object_key": f'device.{device_id}',
+                            "op": "MERGE",
+                            "value": {"hot_water_mode": mode},
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Basic {self._access_token}"},
+            )
+        except requests.exceptions.RequestException as e:
+            _LOGGER.error(e)
+            _LOGGER.error('Failed to set hot water mode, trying again')
+            self.hotwater_set_boost(device_id, mode)
+        except KeyError:
+            _LOGGER.debug('Failed to set hot water mode, '
+                          'trying to log in again')
+            self.login()
+            self.hotwater_set_boost(device_id, mode)
+    
     @Decorators.refresh_login
     def _camera_set_properties(self, device_id, property, value):
         if device_id not in self.cameras:

@@ -20,6 +20,7 @@ will never be as reliable as the original API
 - Nest Protect support
 - Nest Thermostat support
 - Nest Thermostat Sensor support
+- Nest Thermostat Hot Water (water heater) support (UK)
 - Nest Camera support
 
 ## Drawbacks
@@ -45,6 +46,9 @@ camera:
   - platform: badnest
 
 sensor:
+  - platform: badnest
+
+water_heater:
   - platform: badnest
 ```
 
@@ -86,6 +90,9 @@ camera:
   - platform: badnest
 
 sensor:
+  - platform: badnest
+
+water_heater:
   - platform: badnest
 ```
 

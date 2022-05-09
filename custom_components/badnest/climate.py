@@ -14,6 +14,10 @@ try:
 except ImportError:
     from homeassistant.components.climate import ClimateDevice as ClimateEntity
 
+try:
+    from homeassistant.components.climate import ClimateEntity
+except ImportError:
+    from homeassistant.components.climate import ClimateDevice as ClimateEntity
 from homeassistant.components.climate.const import (
     ATTR_TARGET_TEMP_HIGH,
     ATTR_TARGET_TEMP_LOW,
@@ -87,17 +91,11 @@ async def async_setup_platform(hass,
         thermostats.append(NestClimate(thermostat, api))
 
     async_add_entities(thermostats)
-    platform = entity_platform.current_platform.get()
-    platform.async_register_entity_service(
-        "set_active_sensor",
-        {
-            vol.Required('sensor'): cv.string,
-        },
-        "custom_set_active_sensor",
-    )
+
 
 class NestClimate(ClimateEntity):
-    """Representation of a Nest climate device."""
+
+    """Representation of a Nest climate entity."""
 
     def __init__(self, device_id, api):
         """Initialize the thermostat."""
@@ -350,8 +348,8 @@ class NestClimate(ClimateEntity):
             )
 
     def update(self):
-        """Updates data"""
+        """Updates data."""
         self.device.update()
-    
+
     def custom_set_active_sensor(entity, **kwargs):
         entity.set_active_sensor(kwargs['sensor'])

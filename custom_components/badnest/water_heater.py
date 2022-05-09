@@ -3,23 +3,25 @@ import time
 import voluptuous as vol
 
 from datetime import datetime
-from homeassistant.util.dt import utcnow
-from homeassistant.helpers.entity import Entity
-from homeassistant.helpers.entity_component import EntityComponent
+from homeassistant.util.dt import now
 from homeassistant.helpers import config_validation as cv
 from homeassistant.const import (
     ATTR_ENTITY_ID,
+    ATTR_TEMPERATURE,
+    TEMP_CELSIUS
 )
+from homeassistant.helpers.temperature import display_temp as show_temp
+
 from homeassistant.components.water_heater import (
-    SCAN_INTERVAL,
     STATE_OFF,
     STATE_ON,
-    STATE_ECO,
     SUPPORT_OPERATION_MODE,
     SUPPORT_AWAY_MODE,
     ATTR_AWAY_MODE,
+    ATTR_CURRENT_TEMPERATURE,
     ATTR_OPERATION_MODE,
     ATTR_OPERATION_LIST,
+    SUPPORT_TARGET_TEMPERATURE
 )
 try:
     from homeassistant.components.water_heater import WaterHeaterEntity
@@ -40,7 +42,6 @@ ATTR_HEATING_ACTIVE = 'heating_active'
 ATTR_AWAY_MODE_ACTIVE = 'away_mode_active'
 
 
-SUPPORTED_FEATURES = SUPPORT_OPERATION_MODE | SUPPORT_AWAY_MODE | SUPPORT_BOOST_MODE
 NEST_TO_HASS_MODE = {"schedule": STATE_SCHEDULE, "off": STATE_OFF}
 HASS_TO_NEST_MODE = {STATE_SCHEDULE: "schedule", STATE_OFF: "off"}
 NEST_TO_HASS_STATE = {True: STATE_ON, False: STATE_OFF}
@@ -74,11 +75,9 @@ async def async_setup_platform(hass,
 
     def hot_water_boost(service):
         """Handle the service call."""
-        all_waterheaters = api['hotwatercontrollers']
-
         entity_ids = service.data[ATTR_ENTITY_ID]
         minutes = service.data[ATTR_TIME_PERIOD]
-        timeToEnd = int(time.mktime(datetime.timetuple(utcnow()))+(minutes*60))
+        timeToEnd = int(time.mktime(datetime.timetuple(now()))+(minutes*60))
         mode = service.data[ATTR_BOOST_MODE]
         _LOGGER.debug('HW boost mode: {} ending: {}'.format(mode, timeToEnd))
 
@@ -101,6 +100,7 @@ async def async_setup_platform(hass,
 
 
 class NestWaterHeater(WaterHeaterEntity):
+
     """Representation of a Nest water heater device."""
 
     def __init__(self, device_id, api):
@@ -108,6 +108,7 @@ class NestWaterHeater(WaterHeaterEntity):
         self._name = "Nest Hot Water Heater"
         self.device_id = device_id
         self.device = api
+        self._attr_temperature_unit = TEMP_CELSIUS
 
     @property
     def unique_id(self):
@@ -122,6 +123,10 @@ class NestWaterHeater(WaterHeaterEntity):
     @property
     def supported_features(self):
         """Return the list of supported features."""
+        if self.device.device_data[self.device_id]['heat_link_hot_water_type'] == 'opentherm':
+            SUPPORTED_FEATURES = SUPPORT_OPERATION_MODE | SUPPORT_AWAY_MODE | SUPPORT_BOOST_MODE | SUPPORT_TARGET_TEMPERATURE
+        else:
+            SUPPORTED_FEATURES = SUPPORT_OPERATION_MODE | SUPPORT_AWAY_MODE | SUPPORT_BOOST_MODE
         return SUPPORTED_FEATURES
 
     @property
@@ -137,7 +142,7 @@ class NestWaterHeater(WaterHeaterEntity):
 
     @property
     def state(self):
-        """ Return the (master) state of the water heater."""
+        """Return the (master) state of the water heater."""
         state = STATE_OFF
         if self.device.device_data[self.device_id]['hot_water_status']:
             state = NEST_TO_HASS_STATE[self.device.device_data[self.device_id]['hot_water_status']]
@@ -203,6 +208,23 @@ class NestWaterHeater(WaterHeaterEntity):
         else:
             data[ATTR_HEATING_ACTIVE] = False
 
+
+        if supported_features & SUPPORT_TARGET_TEMPERATURE:
+            # Set target temperature
+            data[ATTR_TEMPERATURE] = show_temp(
+                    self.hass,
+                    self.device.device_data[self.device_id]['hot_water_temperature'],
+                    self.temperature_unit,
+                    self.precision)
+
+
+            # Set current target temperature
+            data[ATTR_CURRENT_TEMPERATURE] = show_temp(
+                    self.hass,
+                    self.device.device_data[self.device_id]['current_water_temperature'],
+                    self.temperature_unit,
+                    self.precision)
+
         _LOGGER.debug("Device state attributes: {}".format(data))
         return data
 
@@ -221,6 +243,16 @@ class NestWaterHeater(WaterHeaterEntity):
         """Return true if away mode is on."""
         away = self.device.device_data[self.device_id]['hot_water_away_setting']
         return away
+
+    @property
+    def current_temperature(self):
+        """Return the current temperature."""
+        return self.device.device_data[self.device_id]['current_water_temperature']
+
+    @property
+    def target_temperature(self):
+        """Return the temperature we try to reach."""
+        return self.device.device_data[self.device_id]['hot_water_temperature']
 
     def set_operation_mode(self, operation_mode):
         """Set new target operation mode."""
@@ -262,6 +294,19 @@ class NestWaterHeater(WaterHeaterEntity):
     def update(self):
         """Get the latest data from the Hot Water Sensor and updates the states."""
         self.device.update()
+
+    def set_temperature(self, **kwargs):
+        """Set new target temperature."""
+        _LOGGER.debug("Setting water temperature")
+        temp = None
+        temp = kwargs.get(ATTR_TEMPERATURE)
+        if temp is not None:
+            self.device.hotwater_set_temperature(
+                self.device_id,
+                temp,
+            )
+
+
 
 
 async def async_service_away_mode(entity, service):
